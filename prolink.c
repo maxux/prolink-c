@@ -495,7 +495,7 @@ uint8_t *prolink_keepalive(kntxt_t *kntxt, uint8_t *source, size_t length) {
     keepalive = (prolink_keepalive_t *) kntxt->keepalive;
     strcpy((char *) keepalive->device_name, "CDJ-VIRTUAL");
 
-    keepalive->player_id = 0x07;
+    keepalive->player_id = 0x01;
     keepalive->network_peers += 1;
 
     memcpy(keepalive->mac_address, kntxt->netinfo.macaddr, sizeof(kntxt->netinfo.macaddr));
@@ -503,6 +503,143 @@ uint8_t *prolink_keepalive(kntxt_t *kntxt, uint8_t *source, size_t length) {
 
     return kntxt->keepalive;
 }
+
+/*
+int testsent = 0;
+int dbsock = 0;
+
+#define DBSRV_TYPE_UINT8   0x0f
+#define DBSRV_TYPE_UINT16  0x10
+#define DBSRV_TYPE_UINT32  0x11
+#define DBSRV_TYPE_BLOB    0x14  // Followed by 4 bytes length
+#define DBSRV_TYPE_STRING  0x26  // Followed by 4 bytes length
+
+typedef struct dbsrv_uint8_t {
+    uint8_t type;
+    uint8_t value;
+
+} __attribute__((packed, scalar_storage_order("big-endian"))) dbsrv_uint8_t;
+
+typedef struct dbsrv_uint16_t {
+    uint8_t type;
+    uint16_t value;
+
+} __attribute__((packed, scalar_storage_order("big-endian"))) dbsrv_uint16_t;
+
+typedef struct dbsrv_uint32_t {
+    uint8_t type;
+    uint32_t value;
+
+} __attribute__((packed, scalar_storage_order("big-endian"))) dbsrv_uint32_t;
+
+typedef struct dbsrv_message_t {
+    dbsrv_uint32_t init;
+    dbsrv_uint32_t txid;
+    dbsrv_uint16_t type;
+    dbsrv_uint8_t args;
+    uint8_t tags_header;
+    uint32_t tags_blob;
+    uint8_t tags[12];
+    dbsrv_uint32_t player;
+
+} __attribute__((packed, scalar_storage_order("big-endian"))) dbsrv_message_t;
+
+void dbserver() {
+    int client_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    struct sockaddr_in address;
+    address.sin_family = AF_INET;
+    address.sin_port = htons(12523);
+
+    inet_aton("169.254.203.213", (struct in_addr *) &(address.sin_addr.s_addr));
+
+    connect(client_socket, (struct sockaddr *) &address, sizeof(address));
+
+    uint8_t message[64];
+    uint8_t preambule[4] = {0x00, 0x00, 0x00, 0x0f};
+    memset(message, 0x00, sizeof(message));
+    memcpy(message, preambule, sizeof(preambule));
+    memcpy(message + 4, "RemoteDBServer", 14);
+
+    send(client_socket, message, 19, 0);
+
+    memset(message, 0x00, sizeof(message));
+    int bytes = recv(client_socket, message, sizeof(message), 0);
+
+    close(client_socket);
+
+    uint16_t *buffer = (uint16_t *) message;
+    uint16_t port = ntohs(*buffer);
+
+    printf(">> %d\n", port);
+
+    //////////////////////////////////////////////////////////////////
+
+    client_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+
+    inet_aton("169.254.203.213", (struct in_addr *) &(address.sin_addr.s_addr));
+
+    connect(client_socket, (struct sockaddr *) &address, sizeof(address));
+
+    dbsrv_uint32_t init = {.type = 0x11, .value = 1};
+    send(client_socket, &init, sizeof(init), 0);
+
+    memset(message, 0x00, sizeof(message));
+    bytes = recv(client_socket, message, sizeof(message), 0);
+
+    fulldump(message, bytes, 1);
+    memset(message, 0x00, sizeof(message));
+
+    dbsrv_message_t cursor = {
+        .init = {.type = DBSRV_TYPE_UINT32, .value = 0x872349ae},
+        .txid = {.type = DBSRV_TYPE_UINT32, .value = 0xfffffffe},
+        .type = {.type = DBSRV_TYPE_UINT16, .value = 0},
+        .args = {.type = DBSRV_TYPE_UINT8,  .value = 1},
+        .tags_header = 0x14,
+        .tags_blob = 0x0c,
+        .tags = {0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        .player = {.type = DBSRV_TYPE_UINT32, .value = 0x01},
+    };
+
+    fulldump(&cursor, sizeof(cursor), 1);
+    send(client_socket, &cursor, sizeof(cursor), 0);
+
+    memset(message, 0x00, sizeof(message));
+    bytes = recv(client_socket, message, sizeof(message), 0);
+    fulldump(message, bytes, 1);
+
+
+    //////////////////////////////////////////////////////////
+
+    cursor.txid.value = 1;
+    cursor.type.value = 0x2002;
+    cursor.args.value = 2;
+    cursor.tags[1] = 0x06;
+
+    uint8_t qbuf[128];
+    memset(qbuf, 0x00, sizeof(qbuf));
+    memcpy(qbuf, &cursor, sizeof(cursor));
+
+    qbuf[33] = 0x01;
+    qbuf[34] = 0x01;
+    qbuf[35] = 0x02;
+
+    qbuf[36] = 0x11;
+    // ...
+    qbuf[41] = 0x11;
+
+    printf("out\n");
+    fulldump(qbuf, 42, 1);
+    send(client_socket, qbuf, 42, 0);
+
+    printf("in\n");
+    bytes = recv(client_socket, message, sizeof(message), 0);
+    fulldump(message, bytes, 1);
+}
+*/
 
 void prolink_keepalive_send(kntxt_t *kntxt) {
     struct sockaddr_in broadcast;
@@ -522,6 +659,13 @@ void prolink_keepalive_send(kntxt_t *kntxt) {
         diep("sendto");
 
     gettimeofday(&kntxt->lastka, NULL);
+
+    /*
+    if(testsent == 0) {
+        dbserver();
+        testsent = 1;
+    }
+    */
 }
 
 int socket_udp_bind(int port) {
@@ -700,7 +844,7 @@ int main(int argc, char *argv[]) {
                 }
 
                 if(ev->data.fd == kntxt.sockfds[1]) {
-                    parse_beatsync(source, message, bytes);
+                    // parse_beatsync(source, message, bytes);
                 }
 
                 if(ev->data.fd == kntxt.sockfds[2]) {
@@ -710,7 +854,5 @@ int main(int argc, char *argv[]) {
         }
     }
 
-
-    // thread_feedback(NULL);
     return 0;
 }
