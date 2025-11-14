@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/ioctl.h>
 #include <net/if.h>
 #include <netinet/ether.h>
 #include <arpa/inet.h>
@@ -20,9 +21,10 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <signal.h>
+#include "prolink.h"
 
 #define EPOLL_EVENTS_LENGTH  64
-#define EPOLL_EVENT_TIMEOUT  200
+#define EPOLL_EVENT_TIMEOUT  50
 
 #define COLOR_RED      "\033[31;1m"
 #define COLOR_YELLOW   "\033[33;1m"
@@ -38,6 +40,7 @@
 #define COLOR_CARIB    "\033[1;38;5;43m"
 #define COLOR_ORANGE   "\033[1;38;5;208m"
 #define COLOR_INDIAN   "\033[1;38;5;167m"
+#define COLOR_HIGHLI   "\033[48;5;123m\033[1;38;5;232m"
 
 #define COLOR_RESET    "\033[0m"
 
@@ -55,7 +58,7 @@
 
 #define debug_event(fmt, ...) { printf(COLOR_ORANGE); debug_raw("-- " fmt, ##__VA_ARGS__); }
 #define debug_packet(fmt, ...) { printf(COLOR_BLUECOLA); debug_raw("-- " fmt, ##__VA_ARGS__); }
-#define debug_metric(source, name, valfmt, value) { printf(COLOR_INDIAN); debug_raw("// %-15s: %-15s:" COLOR_ORANGE " " valfmt "\n", source, name, value); }
+#define xdebug_metric(source, name, valfmt, value) { printf(COLOR_INDIAN); debug_raw("// %-15s: %-15s:" COLOR_ORANGE " " valfmt "\n", source, name, value); }
 #define debug_metric_size(req, name, value) { printf(COLOR_INDIAN); debug_raw("// %s: %-20s: " COLOR_LIGHT "%u" COLOR_ORANGE " bytes (" COLOR_LIGHT "%.2f" COLOR_ORANGE " KB)\n" , req->devrid, name, value, value / 1024.0); }
 
 #define debug_error(fmt, ...) { printf(COLOR_RED); debug_raw("!! " fmt, ##__VA_ARGS__); }
@@ -81,6 +84,9 @@ typedef struct kntxt_t {
     // Keep Alive Packet crafted
     uint8_t *keepalive;
     int keeplength;
+
+    // device state backlog
+    prolink_state_t **state;
 
 } kntxt_t;
 
@@ -158,181 +164,6 @@ void fulldump(void *_data, size_t len, uint8_t header) {
 
 // ProLink Packet Header [Qspt1WmJOL]
 uint8_t prolinkid[10] = {0x51, 0x73, 0x70, 0x74, 0x31, 0x57, 0x6d, 0x4a, 0x4f, 0x4c};
-
-#define PROLINK_ANNOUNCE_CHANNEL_CLAIM_INIT  0x00
-#define PROLINK_ANNOUNCE_CHANNEL_CLAIM_SYN   0x02
-#define PROLINK_ANNOUNCE_CHANNEL_CLAIM_ACK   0x04
-
-#define PROLINK_ANNOUNCE_KEEP_ALIVE          0x06
-#define PROLINK_ANNOUNCE_INITIALIZE          0x0a
-
-typedef struct prolink_announce_t {
-    uint8_t preambule[10];
-    uint8_t type;
-    uint8_t __skip;
-    char devname[20];
-
-} __attribute__((packed)) prolink_announce_t;
-
-typedef struct prolink_keepalive_t {
-    uint8_t preambule[10];    //
-    uint8_t frame_type;       //
-    uint8_t __skip_a;         // Unknown
-    uint8_t device_name[20];  //
-    uint8_t __skip_b;         // Unknown
-    uint8_t device_type;      //
-    uint16_t packet_length;   // Entire packet length
-    uint8_t player_id;        //
-    uint8_t __skip_c;         // Unknown
-    uint8_t mac_address[6];   //
-    uint32_t ip_address;      //
-    uint8_t network_peers;    //
-    uint8_t __skip_d[5];      // Unknown
-
-} __attribute__((packed)) prolink_keepalive_t;
-
-#define PROLINK_SLOT_NOT_LOADED       0x00
-#define PROLINK_SLOT_CD_DRIVE         0x01
-#define PROLINK_SLOT_SD_DRIVE         0x02
-#define PROLINK_SLOT_USB_DRIVE        0x03
-#define PROLINK_SLOT_REKORDBOX        0x04
-
-#define PROLINK_TRACK_NOT_LOADED      0x00
-#define PROLINK_TRACK_ANALYZED        0x01
-#define PROLINK_TRACK_UNANALYZED      0x02
-#define PROLINK_TRACK_CD              0x05
-
-#define PROLINK_LOCAL_LOADED          0x00
-#define PROLINK_LOCAL_EJECT_REQUEST   0x02   // ??
-#define PROLINK_LOCAL_UNMOUNTING      0x03   // ??
-#define PROLINK_LOCAL_UNLOADED        0x04
-
-#define PROLINK_PLAYMODE_UNLOADED     0x00   // No track is loaded.
-#define PROLINK_PLAYMODE_LOADING      0x02   // A track is in the process of loading.
-#define PROLINK_PLAYMODE_PLAYING      0x03   // Player is playing normally.
-#define PROLINK_PLAYMODE_LOOP         0x04   // Player is playing a loop.
-#define PROLINK_PLAYMODE_PAUSED       0x05   // Player is paused anywhere other than the cue point.
-#define PROLINK_PLAYMODE_CUE_PAUSE    0x06   // Player is paused at the cue point.
-#define PROLINK_PLAYMODE_CUE_PLAY     0x07   // Cue Play is in progress (playback while the cue button is held down).
-#define PROLINK_PLAYMODE_CUE_SCRATCH  0x08   // Cue scratch is in progress.
-#define PROLINK_PLAYMODE_SEEKING      0x09   // Player is searching forwards or backwards.
-#define PROLINK_PLAYMODE_ENDED        0x11   // Player reached the end of the track and stopped.
-
-typedef struct prolink_device_status_t {
-    uint8_t preambule[10];    //
-    uint8_t frame_type;       //
-    uint8_t device_name[20];  //
-    uint8_t packet_type;
-    uint8_t packet_subtype;
-    uint8_t player_id;
-    uint16_t packet_length;
-    uint8_t player_id_b;
-
-    uint8_t __skip_a[2];
-    uint8_t activity;
-    uint8_t loaded_from;
-    uint8_t loaded_slot;
-    uint8_t track_type;
-
-    uint8_t __skip_b;
-    uint32_t rekordboxid;
-
-    uint8_t __skip_d[2];
-    uint16_t track_number;
-
-    uint8_t __skip_e[54];
-    uint8_t usb_activity;
-    uint8_t sd_activity;
-
-    uint8_t __skip_f[3];
-    uint8_t usb_local;
-
-    uint8_t __skip_g[3];
-    uint8_t sd_local;
-    uint8_t __skip_h;
-    uint8_t link_available;
-
-    uint8_t __skip_i[5];
-    uint8_t play_mode;
-    uint8_t firmware[4];
-
-    uint8_t __skip_j[4];
-    uint32_t sync;
-
-    uint8_t __skip_k;
-    uint8_t status_flags;
-
-    uint8_t __skip_l;
-    uint8_t play_jog;
-
-    union {
-        uint8_t bytes[4];
-        uint32_t value;
-
-    } __attribute__((scalar_storage_order("big-endian"))) pitch;
-
-    uint8_t master_bpm[2];
-    union {
-        uint8_t bytes[2];
-        uint16_t value;
-
-    } __attribute__((scalar_storage_order("big-endian"))) bpm;
-
-    uint8_t __skip_m[4];
-    uint8_t pitch2[4];
-
-    uint8_t __skip_n;
-    uint8_t play_mode_xt;
-    uint8_t master_mean;
-    uint8_t master_handoff;
-    uint32_t beat_count;
-    uint16_t next_cue;
-    uint8_t downbeat;
-
-    uint8_t __skip_o[16];
-    uint8_t media_presence;
-    uint8_t usb_unsafe;
-    uint8_t sd_unsafe;
-    uint8_t emergency;
-
-    uint8_t __skip_p[5];
-    uint32_t pitch3;
-    uint32_t pitch4;
-    uint32_t packet_counter;
-    uint8_t player_type;
-    uint8_t touch_audio;
-
-    uint8_t __skip_q[44];
-    uint8_t waveform_color;
-
-    uint8_t __skip_r[2];
-    uint8_t waveform_position;
-
-    uint8_t __skip_s[31];
-    uint8_t buffer_forward;
-    uint8_t buffer_backward;
-    uint8_t buffer_status;
-
-    // CDJ-3000
-    // uint8_t __skip_t[56];
-    // uint8_t master_tempo;
-
-} __attribute__((packed, scalar_storage_order("big-endian"))) prolink_device_status_t;
-
-#define PROLINK_BEATSYNC_FADER_START                 0x02
-#define PROLINK_BEATSYNC_CHANNEL_ON_AIR              0x03
-#define PROLINK_BEATSYNC_ABSOLUTE_POSITION           0x0b
-#define PROLINK_BEATSYNC_MASTER_HANDOFF_REQUEST      0x26
-#define PROLINK_BEATSYNC_MASTER_HANDOFF_RESPONSE     0x27
-#define PROLINK_BEATSYNC_BEAT                        0x28
-#define PROLINK_BEATSYNC_SYNC_CONTROL                0x2a
-
-typedef struct prolink_beatsync_t {
-    uint8_t preambule[10];
-    uint8_t type;
-    char devname[20];
-
-} __attribute__((packed)) prolink_beatsync_t;
 
 void parse_announce(char *source, uint8_t *message, size_t length) {
     uint8_t *packet = message;
@@ -412,59 +243,85 @@ void parse_beatsync(char *source, uint8_t *message, size_t length) {
     }
 }
 
-void parse_cdjstatus(char *source, uint8_t *message, size_t length) {
+void debug_metric_s(prolink_state_t *state, char *name, char *valfmt, off_t offset) {
+    //
+}
+
+void debug_metric_v(prolink_state_t *state, char *name, char *valfmt, off_t offset) {
+    char buffer[128];
+    uint8_t *value = ((uint8_t *) state->status + offset);
+    uint8_t *old = ((uint8_t *) state->status_ref + offset);
+
+    if(*value != *old) {
+        sprintf(buffer, COLOR_INDIAN "// %%-15s: %%-15s: " COLOR_HIGHLI "%s" COLOR_RESET "\n", valfmt);
+
+    } else {
+        sprintf(buffer, COLOR_INDIAN "// %%-15s: %%-15s:" COLOR_ORANGE " %s\n", valfmt);
+    }
+
+    debug_raw(buffer, state->source, name, *value);
+}
+
+void dump_cdjstatus(char *source, prolink_state_t *state) {
+    fulldump((uint8_t *) state->status, sizeof(prolink_device_status_t), 1);
+
+    debug_metric_s(state, "Device Name   ", "%.20s",  offsetof(prolink_device_status_t, device_name));
+    debug_metric_v(state, "Packet Type   ", "0x%02x", offsetof(prolink_device_status_t, packet_type));
+    debug_metric_v(state, "Packet SubType", "0x%02x", offsetof(prolink_device_status_t, packet_subtype));
+    debug_metric_v(state, "Player ID     ", "0x%02x", offsetof(prolink_device_status_t, player_id));
+    debug_metric_v(state, "Packet Length ", "0x%02x", offsetof(prolink_device_status_t, packet_length));
+    debug_metric_v(state, "Player ID 2   ", "0x%02x", offsetof(prolink_device_status_t, player_id_b));
+    debug_metric_v(state, "Activity      ", "0x%02x", offsetof(prolink_device_status_t, activity));
+    debug_metric_v(state, "Loaded From ID", "0x%02x", offsetof(prolink_device_status_t, loaded_from));
+    debug_metric_v(state, "Loaded Slot   ", "0x%02x", offsetof(prolink_device_status_t, loaded_slot));
+    debug_metric_v(state, "Track Type    ", "0x%02x", offsetof(prolink_device_status_t, track_type));
+    debug_metric_v(state, "Rekordbox ID  ", "0x%02x", offsetof(prolink_device_status_t, rekordboxid));
+    debug_metric_v(state, "Track Number  ", "0x%02x", offsetof(prolink_device_status_t, track_number));
+    debug_metric_v(state, "USB Activity  ", "0x%02x", offsetof(prolink_device_status_t, usb_activity));
+    debug_metric_v(state, "SD Activity   ", "0x%02x", offsetof(prolink_device_status_t, sd_activity));
+    debug_metric_v(state, "USB Local     ", "0x%02x", offsetof(prolink_device_status_t, usb_local));
+    debug_metric_v(state, "SD Local      ", "0x%02x", offsetof(prolink_device_status_t, sd_local));
+    debug_metric_v(state, "Link Available", "0x%02x", offsetof(prolink_device_status_t, link_available));
+    debug_metric_v(state, "Play Mode     ", "0x%02x", offsetof(prolink_device_status_t, play_mode));
+    debug_metric_s(state, "Firmware      ", "%.4s",   offsetof(prolink_device_status_t, firmware));
+    debug_metric_v(state, "Sync Info     ", "0x%08x", offsetof(prolink_device_status_t, sync));
+    debug_metric_v(state, "Status Flags  ", "0x%02x", offsetof(prolink_device_status_t, status_flags));
+    debug_metric_v(state, "Jog           ", "0x%02x", offsetof(prolink_device_status_t, play_jog));
+    debug_metric_v(state, "Pitch         ", "0x%08x", offsetof(prolink_device_status_t, pitch));
+    debug_metric_v(state, "Track BPM     ", "0x%04x", offsetof(prolink_device_status_t, bpm));
+    debug_metric_v(state, "Play Mode Exte", "0x%02x", offsetof(prolink_device_status_t, play_mode_xt));
+    debug_metric_v(state, "Master Meaning", "0x%02x", offsetof(prolink_device_status_t, master_mean));
+    debug_metric_v(state, "Master Handoff", "0x%02x", offsetof(prolink_device_status_t, master_handoff));
+    debug_metric_v(state, "Current Beat  ", "0x%08x", offsetof(prolink_device_status_t, beat_count));
+    debug_metric_v(state, "Next Cue Beat ", "0x%04x", offsetof(prolink_device_status_t, next_cue));
+    debug_metric_v(state, "Down Beat     ", "0x%02x", offsetof(prolink_device_status_t, downbeat));
+    debug_metric_v(state, "Media Presence", "0x%02x", offsetof(prolink_device_status_t, media_presence));
+    debug_metric_v(state, "USB Unsafe    ", "0x%02x", offsetof(prolink_device_status_t, usb_unsafe));
+    debug_metric_v(state, "SD Unsafe     ", "0x%02x", offsetof(prolink_device_status_t, sd_unsafe));
+    debug_metric_v(state, "Emergency Loop", "0x%02x", offsetof(prolink_device_status_t, emergency));
+    debug_metric_v(state, "Packet Counter", "0x%02x", offsetof(prolink_device_status_t, packet_counter));
+    debug_metric_v(state, "Player Type   ", "0x%02x", offsetof(prolink_device_status_t, player_type));
+    debug_metric_v(state, "Waveform Color", "0x%02x", offsetof(prolink_device_status_t, waveform_color));
+    debug_metric_v(state, "Waveform Locat", "0x%02x", offsetof(prolink_device_status_t, waveform_position));
+    debug_metric_v(state, "Buffer Forward", "0x%02x", offsetof(prolink_device_status_t, buffer_forward));
+    debug_metric_v(state, "Buffer Backwar", "0x%02x", offsetof(prolink_device_status_t, buffer_backward));
+    debug_metric_v(state, "Buffer Status ", "0x%02x", offsetof(prolink_device_status_t, buffer_status));
+
+    debug_info("--------------------------\n");
+
+    /*
+    debug_metric(state, "Pitch Computed", "%3.3f %%", computed->pitch);
+    debug_metric(state, "Track BPM Comp", "%f", computed->bpm);
+    debug_metric(state, "Current BPM Co", "%3.3f", computed->live_bpm);
+    */
+}
+
+/*
+void parse_cdjstatus(kntxt_t *kntxt, char *source, uint8_t *message, size_t length) {
     (void) length;
     prolink_device_status_t *status = (prolink_device_status_t *) message;
 
-    if(status->player_id == 0x02)
-        return;
 
-    fulldump(message, length, 1);
-
-    debug_metric(source, "Device Name   ", "%.20s", status->device_name);
-    debug_metric(source, "Packet Type   ", "0x%02x", status->packet_type);
-    debug_metric(source, "Packet SubType", "0x%02x", status->packet_subtype);
-    debug_metric(source, "Player ID     ", "0x%02x", status->player_id);
-    debug_metric(source, "Packet Length ", "0x%02x", status->packet_length);
-    debug_metric(source, "Player ID 2   ", "0x%02x", status->player_id_b);
-    debug_metric(source, "Activity      ", "0x%02x", status->activity);
-    debug_metric(source, "Loaded From ID", "0x%02x", status->loaded_from);
-    debug_metric(source, "Loaded Slot   ", "0x%02x", status->loaded_slot);
-    debug_metric(source, "Track Type    ", "0x%02x", status->track_type);
-    debug_metric(source, "Rekordbox ID  ", "0x%02x", status->rekordboxid);
-    debug_metric(source, "Track Number  ", "0x%02x", status->track_number);
-    debug_metric(source, "USB Activity  ", "0x%02x", status->usb_activity);
-    debug_metric(source, "SD Activity   ", "0x%02x", status->sd_activity);
-    debug_metric(source, "USB Local     ", "0x%02x", status->usb_local);
-    debug_metric(source, "SD Local      ", "0x%02x", status->sd_local);
-    debug_metric(source, "Link Available", "0x%02x", status->link_available);
-    debug_metric(source, "Play Mode     ", "0x%02x", status->play_mode);
-    debug_metric(source, "Firmware      ", "%.4s", status->firmware);
-    debug_metric(source, "Sync Info     ", "0x%08x", status->sync);
-    debug_metric(source, "Status Flags  ", "0x%02x", status->status_flags);
-    debug_metric(source, "Jog           ", "0x%02x", status->play_jog);
-    debug_metric(source, "Pitch         ", "0x%08x", status->pitch.value);
-    debug_metric(source, "Track BPM     ", "0x%04x", status->bpm.value);
-    debug_metric(source, "Play Mode Exte", "0x%02x", status->play_mode_xt);
-    debug_metric(source, "Master Meaning", "0x%02x", status->master_mean);
-    debug_metric(source, "Master Handoff", "0x%02x", status->master_handoff);
-    debug_metric(source, "Current Beat  ", "0x%08x", status->beat_count);
-    debug_metric(source, "Next Cue Beat ", "0x%04x", status->next_cue);
-    debug_metric(source, "Down Beat     ", "0x%02x", status->downbeat);
-    debug_metric(source, "Media Presence", "0x%02x", status->media_presence);
-    debug_metric(source, "USB Unsafe    ", "0x%02x", status->usb_unsafe);
-    debug_metric(source, "SD Unsafe     ", "0x%02x", status->sd_unsafe);
-    debug_metric(source, "Emergency Loop", "0x%02x", status->emergency);
-    debug_metric(source, "Packet Counter", "0x%02x", status->packet_counter);
-    debug_metric(source, "Player Type   ", "0x%02x", status->player_type);
-    debug_metric(source, "Waveform Color", "0x%02x", status->waveform_color);
-    debug_metric(source, "Waveform Locat", "0x%02x", status->waveform_position);
-    debug_metric(source, "Buffer Forward", "0x%02x", status->buffer_forward);
-    debug_metric(source, "Buffer Backwar", "0x%02x", status->buffer_backward);
-    debug_metric(source, "Buffer Status ", "0x%02x", status->buffer_status);
-
-
-    debug_info("--------------------------\n");
 
     ssize_t bbpitch = 0, bpitch;
     bbpitch += status->pitch.bytes[1] * 0x10000;
@@ -473,15 +330,13 @@ void parse_cdjstatus(char *source, uint8_t *message, size_t length) {
     bpitch = bbpitch - 0x100000;
 
     double pitch = 100.0 * (bpitch / (double) 0x100000);
-    debug_metric(source, "Pitch Computed", "%3.3f %%", pitch);
 
     ssize_t bbpm = (status->bpm.bytes[0] * 256) + status->bpm.bytes[1];
     double bpm = bbpm / 100.0;
-    debug_metric(source, "Track BPM Comp", "%f", bpm);
 
     double cbpm = ((double) (bbpm * bbpitch) / 0x100000) / 100;
-    debug_metric(source, "Current BPM Co", "%3.3f", cbpm);
 }
+*/
 
 uint8_t *prolink_keepalive(kntxt_t *kntxt, uint8_t *source, size_t length) {
     prolink_keepalive_t *keepalive;
@@ -505,143 +360,6 @@ uint8_t *prolink_keepalive(kntxt_t *kntxt, uint8_t *source, size_t length) {
 
     return kntxt->keepalive;
 }
-
-/*
-int testsent = 0;
-int dbsock = 0;
-
-#define DBSRV_TYPE_UINT8   0x0f
-#define DBSRV_TYPE_UINT16  0x10
-#define DBSRV_TYPE_UINT32  0x11
-#define DBSRV_TYPE_BLOB    0x14  // Followed by 4 bytes length
-#define DBSRV_TYPE_STRING  0x26  // Followed by 4 bytes length
-
-typedef struct dbsrv_uint8_t {
-    uint8_t type;
-    uint8_t value;
-
-} __attribute__((packed, scalar_storage_order("big-endian"))) dbsrv_uint8_t;
-
-typedef struct dbsrv_uint16_t {
-    uint8_t type;
-    uint16_t value;
-
-} __attribute__((packed, scalar_storage_order("big-endian"))) dbsrv_uint16_t;
-
-typedef struct dbsrv_uint32_t {
-    uint8_t type;
-    uint32_t value;
-
-} __attribute__((packed, scalar_storage_order("big-endian"))) dbsrv_uint32_t;
-
-typedef struct dbsrv_message_t {
-    dbsrv_uint32_t init;
-    dbsrv_uint32_t txid;
-    dbsrv_uint16_t type;
-    dbsrv_uint8_t args;
-    uint8_t tags_header;
-    uint32_t tags_blob;
-    uint8_t tags[12];
-    dbsrv_uint32_t player;
-
-} __attribute__((packed, scalar_storage_order("big-endian"))) dbsrv_message_t;
-
-void dbserver() {
-    int client_socket = socket(AF_INET, SOCK_STREAM, 0);
-
-    struct sockaddr_in address;
-    address.sin_family = AF_INET;
-    address.sin_port = htons(12523);
-
-    inet_aton("169.254.203.213", (struct in_addr *) &(address.sin_addr.s_addr));
-
-    connect(client_socket, (struct sockaddr *) &address, sizeof(address));
-
-    uint8_t message[64];
-    uint8_t preambule[4] = {0x00, 0x00, 0x00, 0x0f};
-    memset(message, 0x00, sizeof(message));
-    memcpy(message, preambule, sizeof(preambule));
-    memcpy(message + 4, "RemoteDBServer", 14);
-
-    send(client_socket, message, 19, 0);
-
-    memset(message, 0x00, sizeof(message));
-    int bytes = recv(client_socket, message, sizeof(message), 0);
-
-    close(client_socket);
-
-    uint16_t *buffer = (uint16_t *) message;
-    uint16_t port = ntohs(*buffer);
-
-    printf(">> %d\n", port);
-
-    //////////////////////////////////////////////////////////////////
-
-    client_socket = socket(AF_INET, SOCK_STREAM, 0);
-
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-
-    inet_aton("169.254.203.213", (struct in_addr *) &(address.sin_addr.s_addr));
-
-    connect(client_socket, (struct sockaddr *) &address, sizeof(address));
-
-    dbsrv_uint32_t init = {.type = 0x11, .value = 1};
-    send(client_socket, &init, sizeof(init), 0);
-
-    memset(message, 0x00, sizeof(message));
-    bytes = recv(client_socket, message, sizeof(message), 0);
-
-    fulldump(message, bytes, 1);
-    memset(message, 0x00, sizeof(message));
-
-    dbsrv_message_t cursor = {
-        .init = {.type = DBSRV_TYPE_UINT32, .value = 0x872349ae},
-        .txid = {.type = DBSRV_TYPE_UINT32, .value = 0xfffffffe},
-        .type = {.type = DBSRV_TYPE_UINT16, .value = 0},
-        .args = {.type = DBSRV_TYPE_UINT8,  .value = 1},
-        .tags_header = 0x14,
-        .tags_blob = 0x0c,
-        .tags = {0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
-        .player = {.type = DBSRV_TYPE_UINT32, .value = 0x01},
-    };
-
-    fulldump(&cursor, sizeof(cursor), 1);
-    send(client_socket, &cursor, sizeof(cursor), 0);
-
-    memset(message, 0x00, sizeof(message));
-    bytes = recv(client_socket, message, sizeof(message), 0);
-    fulldump(message, bytes, 1);
-
-
-    //////////////////////////////////////////////////////////
-
-    cursor.txid.value = 1;
-    cursor.type.value = 0x2002;
-    cursor.args.value = 2;
-    cursor.tags[1] = 0x06;
-
-    uint8_t qbuf[128];
-    memset(qbuf, 0x00, sizeof(qbuf));
-    memcpy(qbuf, &cursor, sizeof(cursor));
-
-    qbuf[33] = 0x01;
-    qbuf[34] = 0x01;
-    qbuf[35] = 0x02;
-
-    qbuf[36] = 0x11;
-    // ...
-    qbuf[41] = 0x11;
-
-    printf("out\n");
-    fulldump(qbuf, 42, 1);
-    send(client_socket, qbuf, 42, 0);
-
-    printf("in\n");
-    bytes = recv(client_socket, message, sizeof(message), 0);
-    fulldump(message, bytes, 1);
-}
-*/
 
 void prolink_keepalive_send(kntxt_t *kntxt) {
     struct sockaddr_in broadcast;
@@ -912,9 +630,79 @@ void console_pane_refresh(console_pane_t *pane) {
 
 ////
 ///
-void cdj_mediainfo_color(console_pane_t *pane) {
-    // FIXME
+void cdj_mediainfo_usb(console_pane_t *pane, prolink_device_status_t *status) {
+    // Media not present
+    if(status->usb_local == 0x04) {
+        console_pane_text_color(pane, 238);
+        console_pane_background_color(pane, -1);
+        return;
+    }
 
+
+    // Media present and active
+    if(status->usb_local == 0x00) {
+        if(status->usb_activity == 0x06) {
+            console_pane_text_color(pane, 255);
+
+        } else if(status->usb_activity == 0x04) {
+            console_pane_text_color(pane, 245);
+        }
+
+        console_pane_background_color(pane, 235);
+    }
+
+    if(status->usb_local == 0x03) {
+        console_pane_text_color(pane, 255);
+        console_pane_background_color(pane, 146);
+    }
+
+    if(status->usb_local == 0x02) {
+        console_pane_text_color(pane, 255);
+        console_pane_background_color(pane, 202);
+    }
+
+    if(status->usb_unsafe == 0x01) {
+        console_pane_text_color(pane, 255);
+        console_pane_background_color(pane, 160);
+    }
+}
+
+void cdj_mediainfo_sd(console_pane_t *pane, prolink_device_status_t *status) {
+    console_pane_text_color(pane, 238);
+
+    // Media not present
+    if(status->sd_local == 0x04) {
+        console_pane_text_color(pane, 238);
+        console_pane_background_color(pane, -1);
+        return;
+    }
+
+
+    // Media present and active
+    if(status->sd_local == 0x00) {
+        if(status->sd_activity == 0x06) {
+            console_pane_text_color(pane, 255);
+
+        } else if(status->sd_activity == 0x04) {
+            console_pane_text_color(pane, 245);
+        }
+
+        console_pane_background_color(pane, 235);
+    }
+
+    if(status->sd_local == 0x02 || status->sd_local == 0x03) {
+        console_pane_text_color(pane, 255);
+        console_pane_background_color(pane, -1);
+    }
+
+    if(status->sd_unsafe == 0x01) {
+        console_pane_text_color(pane, 255);
+        console_pane_background_color(pane, 160);
+    }
+}
+
+/*
+void cdj_mediainfo_color(console_pane_t *pane, prolink_device_status_t *status) {
     // Media not present
     console_pane_text_color(pane, 238);
     console_pane_background_color(pane, -1);
@@ -935,60 +723,77 @@ void cdj_mediainfo_color(console_pane_t *pane) {
     console_pane_text_color(pane, 255);
     console_pane_background_color(pane, 160);
 }
+*/
 
-void draw_cdj_mediainfo(console_pane_t *pane, void *info) {
-    (void) info;
+void draw_cdj_mediainfo(console_pane_t *pane, prolink_state_t *state) {
+    if(state == NULL)
+        return;
 
-    console_pane_text_color(pane, 237);
-    console_pane_background_color(pane, -1);
+    prolink_device_status_t *status = state->status;
+
+    // console_pane_text_color(pane, 237);
+    // console_pane_background_color(pane, -1);
+    cdj_mediainfo_usb(pane, status);
     console_pane_content_write(pane, 1, pane->width - 4, " USB ");
 
-    console_pane_text_color(pane, 255);
+    cdj_mediainfo_sd(pane, status);
     console_pane_content_write(pane, 2, pane->width - 4, " SD  ");
 
-    console_pane_background_color(pane, 235);
+    console_pane_text_color(pane, 235);
+    console_pane_background_color(pane, -1);
     console_pane_content_write(pane, 3, pane->width - 4, " CD  ");
 
     console_pane_content_write(pane, 4, pane->width - 4, " ERR ");
 
-    console_pane_text_color(pane, 255);
-    console_pane_background_color(pane, 202);
+    console_pane_text_color(pane, state->refreshed ? 240 : 245);
+    console_pane_background_color(pane, 235);
     console_pane_content_write(pane, 5, pane->width - 4, " NET ");
 
     console_pane_text_color(pane, 255);
     console_pane_background_color(pane, -1);
 }
 
-void draw_cdjstatus(console_pane_t **panes, char *source, uint8_t *message) {
-    prolink_device_status_t *status = (prolink_device_status_t *) message;
+prolink_device_status_t *process_cdjstatus(uint8_t *message) {
+    return (prolink_device_status_t *) message;
+}
 
-    int pid = status->player_id;
-    console_pane_t *pane = panes[pid - 1];
-
-    if(pane->brdcolor == 239) {
-        console_pane_border_color(pane, 37);
-        console_pane_refresh(pane);
-    }
-
+prolink_computed_t *compute_cdjstatus(prolink_device_status_t *status, prolink_computed_t *computed) {
     ssize_t bbpitch = 0, bpitch;
     bbpitch += status->pitch.bytes[1] * 0x10000;
     bbpitch += status->pitch.bytes[2] * 0x100;
     bbpitch += status->pitch.bytes[3];
     bpitch = bbpitch - 0x100000;
 
-    double pitch = 100.0 * (bpitch / (double) 0x100000);
+    computed->pitch = 100.0 * (bpitch / (double) 0x100000);
 
     ssize_t bbpm = (status->bpm.bytes[0] * 256) + status->bpm.bytes[1];
-    double bpm = bbpm / 100.0;
+    computed->bpm = bbpm / 100.0;
 
-    double cbpm = ((double) (bbpm * bbpitch) / 0x100000) / 100;
+    computed->live_bpm = ((double) (bbpm * bbpitch) / 0x100000) / 100;
 
+    return computed;
+}
+
+console_pane_t *process_pane(console_pane_t **panes, prolink_state_t *state) {
+    return panes[state->status->player_id - 1];
+}
+
+void draw_cdjstatus(console_pane_t *pane, prolink_state_t *state) {
+    prolink_device_status_t *status = state->status;
+    prolink_computed_t *computed = &state->computed;
+
+    if(pane->brdcolor == 239) {
+        console_pane_border_color(pane, 37);
+        console_pane_refresh(pane);
+    }
 
     char devname[48];
     sprintf(devname, "%s v%s", status->device_name, status->firmware);
 
+    draw_cdj_mediainfo(pane, state);
+
     console_pane_text_color(pane, 96);
-    console_pane_footer_write(pane, 1, "%-15s", source);
+    console_pane_footer_write(pane, 1, "%-15s", state->source);
     console_pane_text_color(pane, 74);
     console_pane_footer_write(pane, 20, "%*s", pane->width - 20, devname);
 
@@ -998,10 +803,11 @@ void draw_cdjstatus(console_pane_t **panes, char *source, uint8_t *message) {
 
     console_cursor_move(pane->top + 2, pane->left + 2);
 
+
     printf("Track: % 05d | ", status->track_number);
     printf("Play: %-15s | ", __play_mode(status->play_mode));
-    printf("Pitch %5.3f | ", pitch);
-    printf("BPM %5.3f -> %5.3f", bpm, cbpm);
+    printf("Pitch %5.3f | ", computed->pitch);
+    printf("BPM %5.3f -> %5.3f", computed->bpm, computed->live_bpm);
 
     console_cursor_move(pane->top + 3, pane->left + 2);
 
@@ -1023,10 +829,48 @@ void draw_cdjstatus(console_pane_t **panes, char *source, uint8_t *message) {
     }
 
     printf(" > % 5d | ", status->next_cue);
-    printf("%s | ", status->usb_activity == 0x06 ? "USB" : "   ");
     printf("Buffer: % 02d % 02d %s", status->buffer_forward, status->buffer_backward, status->buffer_status ? "OK" : "");
 
     fflush(stdout);
+
+    state->refreshed = 0;
+}
+
+prolink_state_t *parse_cdjstatus(kntxt_t *kntxt, prolink_device_status_t *status) {
+    prolink_state_t *state = kntxt->state[status->player_id];
+
+    if(state->status == NULL) {
+        // create an empty status reference
+        state->status = calloc(1, sizeof(prolink_device_status_t));
+    }
+
+    // move old data as reference
+    free(state->status_ref);
+    state->status_ref = state->status;
+
+    state->status = malloc(sizeof(prolink_device_status_t));
+    memcpy(state->status, status, sizeof(prolink_device_status_t));
+
+    // move old computed data as reference
+    state->computed_ref = state->computed;
+
+    // compute possible data based on cdjstatus
+    compute_cdjstatus(status, &state->computed);
+
+    // update refresh flag to notify network activity
+    state->refreshed = 1;
+
+    return state;
+}
+
+void draw_fast_refresh(kntxt_t *kntxt, console_pane_t **panes) {
+    for(int i = 0; i < 4; i++) {
+        prolink_state_t *state = kntxt->state[i];
+        if(state && state->status) {
+            console_pane_t *pane = process_pane(panes, state);
+            draw_cdjstatus(pane, state);
+        }
+    }
 }
 
 ///
@@ -1082,6 +926,11 @@ int main(int argc, char *argv[]) {
     kntxt_t kntxt;
     __kntxt = &kntxt;
     memset(&kntxt, 0x00, sizeof(kntxt_t));
+
+    kntxt.state = (prolink_state_t **) calloc(16, sizeof(prolink_state_t *)); // FIXME
+    for(int i = 0; i < 16; i++) {
+        kntxt.state[i] = (prolink_state_t *) calloc(1, sizeof(prolink_state_t));
+    }
 
     // Initialize Main Context
     gettimeofday(&kntxt.runstart, NULL);
@@ -1154,6 +1003,7 @@ int main(int argc, char *argv[]) {
         }
 
         if(n == 0) {
+            draw_fast_refresh(&kntxt, panes);
             continue;
         }
 
@@ -1197,8 +1047,18 @@ int main(int argc, char *argv[]) {
                 }
 
                 if(ev->data.fd == kntxt.sockfds[2]) {
-                    // parse_cdjstatus(source, message, bytes);
-                    draw_cdjstatus(panes, source, message);
+                    prolink_device_status_t *status = process_cdjstatus(message);
+                    int playerid = status->player_id;
+
+                    prolink_state_t *state = parse_cdjstatus(&kntxt, status);
+                    strcpy(state->source, source);
+
+                    if(playerid == 3) {
+                        // dump_cdjstatus(source, state);
+                    }
+
+                    console_pane_t *pane = process_pane(panes, state);
+                    draw_cdjstatus(pane, state);
                 }
             }
         }
