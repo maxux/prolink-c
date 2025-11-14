@@ -1,15 +1,15 @@
-EXEC_PROLINK_DEBUG = prolink
+EXEC_PROLINK_DEBUG = prolink-debug
 EXEC_PROLINK_SHOW = prolink-show
 
 CFLAGS += -W -Wall -O2 -pipe -ansi -std=gnu99 -g
-LDFLAGS += -ljack
+LDFLAGS += 
 
 CC = gcc
 
-PROLINK_DEBUG_SRC=$(prolink.c)
+PROLINK_DEBUG_SRC=$(prolink-debug.c)
 PROLINK_DEBUG_OBJ=$(PROLINK_DEBUG_SRC:.c=.o)
 
-PROLINK_SHOW_SRC=$(prolink.c)
+PROLINK_SHOW_SRC=$(prolink-show.c)
 PROLINK_SHOW_OBJ=$(PROLINK_SHOW_SRC:.c=.o)
 
 all: $(EXEC_PROLINK_DEBUG) $(EXEC_PROLINK_SHOW)
